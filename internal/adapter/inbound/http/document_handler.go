@@ -491,7 +491,8 @@ func isClientStreamError(err error) bool {
 // (existing row is authoritative), matching the createDocument contract.
 func (h *DocumentHandler) Copy(w http.ResponseWriter, r *http.Request) {
 	var body CopyDocumentRequest
-	if !decodeStrictJSON(w, r, &body) {
+	if err := decodeStrictJSON(r, &body); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
 		return
 	}
 
@@ -585,8 +586,10 @@ func (h *DocumentHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := DeleteDocumentResponse{
-		AuthorizationID: deleted.AuthorizationID.String(),
+	resp := DeleteDocumentResponse{}
+	if deleted.AuthorizationID != uuid.Nil {
+		s := deleted.AuthorizationID.String()
+		resp.AuthorizationID = &s
 	}
 	if deleted.TagsetID != nil {
 		s := deleted.TagsetID.String()
@@ -617,7 +620,8 @@ func (h *DocumentHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body UpdateDocumentRequest
-	if !decodeStrictJSON(w, r, &body) {
+	if err := decodeStrictJSON(r, &body); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
 		return
 	}
 
@@ -782,24 +786,21 @@ func parseDocID(r *http.Request) (uuid.UUID, error) {
 }
 
 // decodeStrictJSON decodes the request body into dst, rejecting unknown
-// fields and any trailing data after the first JSON object. It reports true
-// on success; on failure it returns false AFTER writing the 400 response
-// itself, so callers must simply return without touching w further.
+// fields and any trailing data after the first JSON object.
 //
 // DisallowUnknownFields is load-bearing: immutable fields (e.g. mimeType on
 // PATCH) must surface as a 400 rather than silently no-op.
-func decodeStrictJSON[T any](w http.ResponseWriter, r *http.Request, dst *T) bool {
+func decodeStrictJSON[T any](r *http.Request, dst *T) error {
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
-		return false
+		return err
 	}
-	if dec.More() {
-		writeJSONError(w, http.StatusBadRequest, "invalid JSON body: trailing data after first object")
-		return false
+	var trailing json.RawMessage
+	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return errors.New("trailing data after first object")
 	}
-	return true
+	return nil
 }
 
 // resolveBucketID resolves the effective storage bucket for a PATCH: the

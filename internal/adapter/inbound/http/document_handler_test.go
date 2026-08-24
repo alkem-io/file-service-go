@@ -922,6 +922,41 @@ func TestDocumentHandler_Delete_Success(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200, body: %s", rr.Code, rr.Body.String())
 	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["authorizationId"] != authID.String() {
+		t.Fatalf("authorizationId = %v, want %s", resp["authorizationId"], authID)
+	}
+}
+
+func TestDocumentHandler_Delete_NullAuthorizationIsOmitted(t *testing.T) {
+	h, repo, _ := newDocHandler()
+	docID := uuid.New()
+	repo.doc = model.Document{ID: docID, ExternalID: "snapshot"}
+	repo.deleteResult = model.DeletedDocument{AuthorizationID: uuid.Nil}
+	repo.count = 1
+
+	r := chi.NewRouter()
+	r.Delete("/internal/file/{id}", h.Delete)
+
+	req := httptest.NewRequest(http.MethodDelete, "/internal/file/"+docID.String(), nil)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if _, present := resp["authorizationId"]; present {
+		t.Fatalf("authorizationId must be omitted for a NULL policy, body: %s", rr.Body.String())
+	}
 }
 
 func TestDocumentHandler_Patch_Success(t *testing.T) {

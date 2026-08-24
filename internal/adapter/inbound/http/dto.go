@@ -36,7 +36,7 @@ func (r CreateDocumentResponse) Render(w http.ResponseWriter) {
 
 // DeleteDocumentResponse is returned by DELETE /internal/document/:id.
 type DeleteDocumentResponse struct {
-	AuthorizationID string  `json:"authorizationId"`
+	AuthorizationID *string `json:"authorizationId,omitempty"`
 	TagsetID        *string `json:"tagsetId,omitempty"`
 }
 
@@ -143,9 +143,12 @@ type UpdateDocumentRequest struct {
 	DisplayName       *string `json:"displayName,omitempty"`
 }
 
+// ContentBatchIDs is the bounded, ordered id list accepted by ContentBatch.
+type ContentBatchIDs []string
+
 // ContentBatchRequest preserves id order and duplicates.
 type ContentBatchRequest struct {
-	Ids []string `json:"ids"`
+	Ids ContentBatchIDs `json:"ids"`
 }
 
 // ContentBatchItem is the positional outcome for one requested id.

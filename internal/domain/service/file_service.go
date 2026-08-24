@@ -140,8 +140,8 @@ func (s *FileService) PruneBackupOutbox(ctx context.Context, retention time.Dura
 // BatchContentResult is one entry of a ReadContentBatch response, positionally
 // aligned with the requested id slice. Found reports whether the document's
 // content was retrieved: when true, Content + MimeType are populated; when
-// false, Err records the per-id reason (row missing, blob gone) without
-// failing the whole batch.
+// false, Err records the per-id reason (row missing, blob gone, backend
+// failure, or response-budget exhaustion) without failing the whole batch.
 type BatchContentResult struct {
 	ID       uuid.UUID
 	Found    bool
@@ -160,8 +160,9 @@ var ErrBatchContentLimit = errors.New("batch content limit exceeded")
 // results; an item that would exceed the remaining budget is returned with
 // ErrBatchContentLimit.
 //
-// Failures are per-id and non-fatal: a missing row or a missing blob yields
-// Found=false with Err set for that position; the remaining ids still resolve.
+// Failures are per-id and non-fatal: missing rows, missing blobs, and backend
+// errors yield Found=false with Err set for that position; the remaining ids
+// still resolve.
 func (s *FileService) ReadContentBatch(ctx context.Context, ids []uuid.UUID, maxTotalBytes int64) []BatchContentResult {
 	results := make([]BatchContentResult, 0, len(ids))
 	remaining := maxTotalBytes

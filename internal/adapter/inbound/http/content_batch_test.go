@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -323,8 +324,17 @@ func TestBatchItem_NilLoggerIsSafe(t *testing.T) {
 	item := (&DocumentHandler{}).batchItem("id", service.BatchContentResult{
 		Err: errors.New("storage unavailable"),
 	})
-	if item.Found || item.Error != "content unavailable" {
-		t.Fatalf("item = %+v, want caller-safe miss", item)
+	if item.Found || item.Error != "backend unavailable" {
+		t.Fatalf("item = %+v, want caller-safe backend failure", item)
+	}
+}
+
+func TestBatchMissReason_MissingBlobIsDistinctFromBackendFailure(t *testing.T) {
+	if got := batchMissReason(os.ErrNotExist); got != "content not found" {
+		t.Fatalf("missing content reason = %q", got)
+	}
+	if got := batchMissReason(errors.New("database unavailable")); got != "backend unavailable" {
+		t.Fatalf("backend failure reason = %q", got)
 	}
 }
 

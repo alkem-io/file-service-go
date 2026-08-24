@@ -1,5 +1,11 @@
 components:
   schemas:
+    http.ContentBatchIDs:
+      items:
+        type: string
+      maxItems: 256
+      minItems: 1
+      type: array
     http.ContentBatchItem:
       properties:
         contentBase64:
@@ -19,9 +25,7 @@ components:
     http.ContentBatchRequest:
       properties:
         ids:
-          items:
-            type: string
-          type: array
+          $ref: '#/components/schemas/http.ContentBatchIDs'
       required:
         - ids
       type: object
@@ -87,8 +91,6 @@ components:
           type: string
         tagsetId:
           type: string
-      required:
-        - authorizationId
       type: object
     http.DocumentMetaResponse:
       properties:

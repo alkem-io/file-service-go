@@ -237,3 +237,20 @@ func TestReadContentBatch_ZeroRemainingSkipsNextBlob(t *testing.T) {
 		t.Fatalf("results = %+v, want first found and second limited", results)
 	}
 }
+
+func TestReadContentBatch_ExhaustedBudgetStillReportsMissingDocument(t *testing.T) {
+	first, missing := uuid.New(), uuid.New()
+	repo := &mockRepo{docsByID: map[uuid.UUID]model.Document{
+		first: {ID: first, ExternalID: "first", MimeType: "text/plain"},
+		// missing intentionally absent: positional miss semantics still apply
+		// after an earlier item consumes the byte budget.
+	}}
+	storage := &mockStorage{dataByID: map[string][]byte{"first": []byte("full")}}
+
+	results := newBatchService(repo, storage).ReadContentBatch(
+		context.Background(), []uuid.UUID{first, missing}, 4,
+	)
+	if !results[0].Found || !errors.Is(results[1].Err, model.ErrDocumentNotFound) {
+		t.Fatalf("results = %+v, want first found and second document-not-found", results)
+	}
+}

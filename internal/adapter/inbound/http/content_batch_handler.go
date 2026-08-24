@@ -2,10 +2,9 @@ package http
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
+	"os"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
@@ -76,23 +75,18 @@ func (h *DocumentHandler) ContentBatch(w http.ResponseWriter, r *http.Request) {
 }
 
 func decodeContentBatchRequest(w http.ResponseWriter, r *http.Request, dst *ContentBatchRequest) bool {
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxContentBatchRequestBytes))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(dst); err != nil {
-		var maxBytesErr *http.MaxBytesError
-		if errors.As(err, &maxBytesErr) {
-			writeJSONError(w, http.StatusRequestEntityTooLarge, "request body too large")
-			return false
-		}
-		writeJSONError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+	r.Body = http.MaxBytesReader(w, r.Body, maxContentBatchRequestBytes)
+	err := decodeStrictJSON(r, dst)
+	if err == nil {
+		return true
+	}
+	var maxBytesErr *http.MaxBytesError
+	if errors.As(err, &maxBytesErr) {
+		writeJSONError(w, http.StatusRequestEntityTooLarge, "request body too large")
 		return false
 	}
-	var trailing json.RawMessage
-	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
-		writeJSONError(w, http.StatusBadRequest, "invalid JSON body: trailing data after first object")
-		return false
-	}
-	return true
+	writeJSONError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+	return false
 }
 
 func (h *DocumentHandler) batchItem(rawID string, res service.BatchContentResult) ContentBatchItem {
@@ -118,8 +112,11 @@ func batchMissReason(err error) string {
 	if errors.Is(err, model.ErrDocumentNotFound) {
 		return "document not found"
 	}
+	if errors.Is(err, os.ErrNotExist) {
+		return "content not found"
+	}
 	if errors.Is(err, service.ErrBatchContentLimit) {
 		return "batch content limit exceeded"
 	}
-	return "content unavailable"
+	return "backend unavailable"
 }
