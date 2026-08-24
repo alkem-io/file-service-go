@@ -36,7 +36,7 @@ func (r CreateDocumentResponse) Render(w http.ResponseWriter) {
 
 // DeleteDocumentResponse is returned by DELETE /internal/document/:id.
 type DeleteDocumentResponse struct {
-	AuthorizationID string  `json:"authorizationId"`
+	AuthorizationID *string `json:"authorizationId,omitempty"`
 	TagsetID        *string `json:"tagsetId,omitempty"`
 }
 
@@ -141,6 +141,35 @@ type UpdateDocumentRequest struct {
 	StorageBucketID   *string `json:"storageBucketId,omitempty"`
 	TemporaryLocation *bool   `json:"temporaryLocation,omitempty"`
 	DisplayName       *string `json:"displayName,omitempty"`
+}
+
+// ContentBatchIDs is the bounded, ordered id list accepted by ContentBatch.
+type ContentBatchIDs []string
+
+// ContentBatchRequest preserves id order and duplicates.
+type ContentBatchRequest struct {
+	Ids ContentBatchIDs `json:"ids"`
+}
+
+// ContentBatchItem is the positional outcome for one requested id.
+type ContentBatchItem struct {
+	ID            string `json:"id"`
+	Found         bool   `json:"found"`
+	MimeType      string `json:"mimeType,omitempty"`
+	ContentBase64 string `json:"contentBase64,omitempty"`
+	Error         string `json:"error,omitempty"`
+}
+
+// ContentBatchResponse preserves request order, including duplicate ids.
+type ContentBatchResponse struct {
+	Items []ContentBatchItem `json:"items"`
+}
+
+// Render writes the response as JSON with HTTP 200.
+func (r ContentBatchResponse) Render(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(r)
 }
 
 // CopyDocumentRequest is the JSON body for POST /internal/file/copy.

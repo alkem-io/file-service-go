@@ -16,8 +16,8 @@ import (
 // committed non-temporary file row carries its backup hint). After commit it emits a best-effort
 // NOTIFY so the backup worker wakes immediately — the durable table + the worker's poll floor
 // cover a lost NOTIFY. A unique violation on the document → model.ErrDuplicateKey with NO outbox
-// row written (a dedup hit means the content already exists and was already captured); the
-// service's dedup path re-queries the winner exactly as on the non-outbox path.
+// row written; the service performs the same one-shot content-winner/conflict classification as
+// on the non-outbox path.
 func (a *Adapter) CreateWithOutbox(ctx context.Context, doc model.Document, contentMetadata model.ContentMetadata, priority int16) (uuid.UUID, error) {
 	raw, err := marshalContentMetadata(contentMetadata)
 	if err != nil {
@@ -162,7 +162,7 @@ func (a *Adapter) DeletePendingByHash(ctx context.Context, externalID string) (i
 // though: a persistently failing NOTIFY (e.g. a permissions issue) should be visible rather than
 // silently dropped.
 func (a *Adapter) notifyBackup(ctx context.Context) {
-	if _, err := a.pool.Exec(ctx, "NOTIFY file_backup_outbox"); err != nil {
+	if err := a.queries.NotifyBackupOutbox(ctx); err != nil {
 		a.logger.Warn("backup-outbox NOTIFY failed (best-effort; the consumer's poll floor still drains)",
 			zap.Error(err))
 	}

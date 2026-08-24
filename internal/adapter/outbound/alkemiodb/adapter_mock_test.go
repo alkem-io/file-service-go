@@ -141,6 +141,19 @@ func TestMock_Create_Success(t *testing.T) {
 	}
 }
 
+func TestCreateDocumentParams_OmittedAuthorizationIsNull(t *testing.T) {
+	params := createDocumentParams(model.Document{AuthorizationID: uuid.Nil}, []byte(`{}`))
+	if params.AuthorizationId.Valid {
+		t.Fatalf("omitted authorization mapping = %+v, want SQL NULL", params.AuthorizationId)
+	}
+
+	authID := uuid.New()
+	params = createDocumentParams(model.Document{AuthorizationID: authID}, []byte(`{}`))
+	if !params.AuthorizationId.Valid || params.AuthorizationId.Bytes != authID {
+		t.Fatalf("real authorization mapping = %+v, want valid %s", params.AuthorizationId, authID)
+	}
+}
+
 func TestMock_UpdateFile_Success(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {

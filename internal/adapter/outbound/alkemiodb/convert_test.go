@@ -35,6 +35,21 @@ func TestUuidToPgxNullable_NonNil(t *testing.T) {
 	}
 }
 
+func TestUuidToPgxNullableNil_NilUUID(t *testing.T) {
+	pgxID := uuidToPgxNullableNil(uuid.Nil)
+	if pgxID.Valid {
+		t.Error("uuid.Nil must map to SQL NULL")
+	}
+}
+
+func TestUuidToPgxNullableNil_RealUUID(t *testing.T) {
+	id := uuid.New()
+	pgxID := uuidToPgxNullableNil(id)
+	if !pgxID.Valid || pgxID.Bytes != id {
+		t.Fatalf("real UUID mapping = %+v, want valid %s", pgxID, id)
+	}
+}
+
 func TestPgxToUUID_Valid(t *testing.T) {
 	id := uuid.New()
 	pgxID := pgtype.UUID{Bytes: id, Valid: true}

@@ -31,6 +31,13 @@ type mockDocRepo struct {
 	count        int
 	getByIDCalls int // asserts the by-hash blob endpoint never does a document lookup
 
+	// docsByID, when non-nil, makes GetByID id-aware: it returns the mapped
+	// document for a known id and model.ErrDocumentNotFound for an unknown
+	// one. Used by the batched-read tests, which need several distinct rows
+	// in one request. When nil, GetByID falls back to the single doc/err
+	// pair above so every existing single-document test is unaffected.
+	docsByID map[uuid.UUID]model.Document
+
 	// Captured args from the most recent UpdateMetadata call.
 	updateMetadataCalls   int
 	lastUpdateBucketID    uuid.UUID
@@ -39,6 +46,7 @@ type mockDocRepo struct {
 	lastUpdateVersion     int
 
 	// Captured args from Create / UpdateFile content_metadata params (US1+).
+	lastCreateDoc                 model.Document
 	lastCreateContentMetadata     model.ContentMetadata
 	lastUpdateFileContentMetadata model.ContentMetadata
 
@@ -50,8 +58,14 @@ type mockDocRepo struct {
 	backfillErr            error
 }
 
-func (m *mockDocRepo) GetByID(_ context.Context, _ uuid.UUID) (model.Document, error) {
+func (m *mockDocRepo) GetByID(_ context.Context, id uuid.UUID) (model.Document, error) {
 	m.getByIDCalls++
+	if m.docsByID != nil {
+		if doc, ok := m.docsByID[id]; ok {
+			return doc, nil
+		}
+		return model.Document{}, model.ErrDocumentNotFound
+	}
 	return m.doc, m.err
 }
 func (m *mockDocRepo) FindByExternalIDAndBucket(_ context.Context, _ string, _ uuid.UUID) (model.Document, error) {
@@ -65,6 +79,7 @@ func (m *mockDocRepo) FindByExternalIDAndBucket(_ context.Context, _ string, _ u
 	return model.Document{}, model.ErrDocumentNotFound
 }
 func (m *mockDocRepo) Create(_ context.Context, doc model.Document, contentMetadata model.ContentMetadata) (uuid.UUID, error) {
+	m.lastCreateDoc = doc
 	m.lastCreateContentMetadata = contentMetadata
 	return doc.ID, m.createErr
 }
@@ -127,13 +142,16 @@ func (m *mockAuth) CheckPrivilege(_ context.Context, actorID, privilege, authPol
 }
 
 type mockStorage struct {
-	data       []byte
-	err        error
-	saveErr    error
-	saved      []byte // captures the last Save/stage payload (replace-path rejection tests)
-	stages     []*httpMockStage
-	streamBody io.ReadCloser // if set, ReadStream returns this (to inject a mid-stream read failure)
-	streamSize int64         // Content-Length ReadStream reports when streamBody is set
+	data            []byte
+	err             error
+	saveErr         error
+	saved           []byte // captures the last Save/stage payload (replace-path rejection tests)
+	stages          []*httpMockStage
+	readStreamCalls int
+	streamBody      io.ReadCloser // if set, ReadStream returns this (to inject a mid-stream read failure)
+	streamSize      int64         // Content-Length ReadStream reports when streamBody is set
+	// Per-blob data for batch tests; nil keeps the existing flat mock behavior.
+	blobsByExternalID map[string][]byte
 }
 
 // failingReadCloser yields `head` then fails — a mid-stream backend read fault (NFS EIO/ESTALE).
@@ -172,13 +190,28 @@ func (m *mockStorage) Save(content []byte) (model.StoredFile, error) {
 	}
 	return model.StoredFile{ExternalID: "hash", Size: len(content), Created: true}, nil
 }
-func (m *mockStorage) Read(_ string) ([]byte, error) { return m.data, m.err }
+func (m *mockStorage) Read(externalID string) ([]byte, error) {
+	if m.blobsByExternalID != nil {
+		if b, ok := m.blobsByExternalID[externalID]; ok {
+			return b, nil
+		}
+		return nil, os.ErrNotExist
+	}
+	return m.data, m.err
+}
 
 // ReadStream mirrors Read's error contract for the streaming path: m.err (if set)
 // is returned as-is (tests set it to port.ErrInvalidKey / os.ErrNotExist / a generic
 // error to drive the handler's 400/404/500 mapping), else m.data is served over a
 // bytes reader.
-func (m *mockStorage) ReadStream(_ string) (io.ReadCloser, int64, error) {
+func (m *mockStorage) ReadStream(externalID string) (io.ReadCloser, int64, error) {
+	m.readStreamCalls++
+	if m.blobsByExternalID != nil {
+		if b, ok := m.blobsByExternalID[externalID]; ok {
+			return io.NopCloser(bytes.NewReader(b)), int64(len(b)), nil
+		}
+		return nil, 0, os.ErrNotExist
+	}
 	if m.err != nil {
 		return nil, 0, m.err
 	}
@@ -263,6 +296,41 @@ func TestPublicHandler_Unauthorized(t *testing.T) {
 
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", rr.Code)
+	}
+}
+
+func TestPublicHandler_NullAuthorizationDeniedBeforeAuthOrStorage(t *testing.T) {
+	docID := uuid.New()
+	auth := &mockAuth{result: model.AuthResult{Allowed: true}}
+	storage := &mockStorage{data: []byte("internal snapshot")}
+	h := &PublicHandler{
+		Repo: &mockDocRepo{doc: model.Document{
+			ID:              docID,
+			ExternalID:      "snapshot-hash",
+			AuthorizationID: uuid.Nil,
+		}},
+		Auth:    auth,
+		Storage: storage,
+		MaxAge:  86400,
+		Logger:  zap.NewNop(),
+	}
+
+	r := chi.NewRouter()
+	r.Get("/rest/storage/file/{id}", h.ServeDocument)
+
+	req := httptest.NewRequest(http.MethodGet, "/rest/storage/file/"+docID.String(), nil)
+	req = req.WithContext(context.WithValue(req.Context(), ctxKeyActorID, "actor-1"))
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rr.Code)
+	}
+	if auth.calls != 0 {
+		t.Fatalf("auth-eval called %d times, want 0", auth.calls)
+	}
+	if storage.readStreamCalls != 0 {
+		t.Fatalf("storage read called %d times, want 0", storage.readStreamCalls)
 	}
 }
 

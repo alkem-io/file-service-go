@@ -7,6 +7,11 @@
 INSERT INTO file_backup_outbox ("fileId", "externalID", priority, "createdBy", "createdDate", size)
 VALUES ($1, $2, $3, $4, $5, $6);
 
+-- name: NotifyBackupOutbox :exec
+-- Best-effort post-commit wake for the backup worker after an outbox row is recorded. A lost
+-- NOTIFY is covered by the durable table + the worker's poll floor, so callers ignore the error.
+NOTIFY file_backup_outbox;
+
 -- name: PruneBackupOutboxDone :execrows
 -- Keep the outbox bounded (SC-008): drop rows the consumer already finished (status='done')
 -- older than a retention cutoff. The ledger (file-backup-service's own DB) keeps the durable

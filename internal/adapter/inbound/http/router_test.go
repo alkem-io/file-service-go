@@ -197,6 +197,30 @@ func TestRouter_InternalDeleteDocument(t *testing.T) {
 	}
 }
 
+// POST /internal/file/content-batch must be registered under the same internal
+// (no-auth) route group as the other /internal/file endpoints. A well-formed
+// batch resolves to 200 through the full router (global middleware + no actor
+// header), confirming the wiring — not just that the route exists.
+func TestRouter_InternalContentBatch(t *testing.T) {
+	r := testRouter()
+
+	body := `{"ids":["` + uuid.New().String() + `"]}`
+	req := httptest.NewRequest(http.MethodPost, "/internal/file/content-batch", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code == http.StatusNotFound || rr.Code == http.StatusMethodNotAllowed {
+		t.Fatalf("POST /internal/file/content-batch = %d, route not registered", rr.Code)
+	}
+	// testRouter seeds a doc + blob and no auth on /internal, so a well-formed
+	// batch returns 200 (the single seeded row resolves; the point is the
+	// internal middleware chain let it through without an actor header).
+	if rr.Code != http.StatusOK {
+		t.Errorf("POST /internal/file/content-batch = %d, want 200 (no-auth internal route)", rr.Code)
+	}
+}
+
 func TestRouter_InternalPatchDocument(t *testing.T) {
 	r := testRouter()
 

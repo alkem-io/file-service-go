@@ -96,7 +96,8 @@ var (
 
 // writeCreate persists a new document — via the transactional outbox path (a backup-outbox row
 // in the same commit, FR-001) when the producer is on and the object is non-temporary, else the
-// original non-transactional Repo.Create. Both return model.ErrDuplicateKey on the dedup race.
+// original non-transactional Repo.Create. Both return model.ErrDuplicateKey on any unique
+// violation; insertDocument classifies it after the write.
 func (s *FileService) writeCreate(ctx context.Context, doc model.Document, meta model.ContentMetadata) error {
 	if s.Outbox != nil && !doc.TemporaryLocation {
 		_, err := s.Outbox.CreateWithOutbox(ctx, doc, meta, s.priorityForMime(doc.MimeType))
@@ -134,6 +135,77 @@ func (s *FileService) PruneBackupOutbox(ctx context.Context, retention time.Dura
 		backupOutboxPruned.Add(n)
 	}
 	return n, err
+}
+
+// BatchContentResult is one entry of a ReadContentBatch response, positionally
+// aligned with the requested id slice. Found reports whether the document's
+// content was retrieved: when true, Content + MimeType are populated; when
+// false, Err records the per-id reason (row missing, blob gone, backend
+// failure, or response-budget exhaustion) without failing the whole batch.
+type BatchContentResult struct {
+	ID       uuid.UUID
+	Found    bool
+	Content  []byte
+	MimeType string
+	Err      error
+}
+
+// ErrBatchContentLimit means the next blob would exceed the caller's aggregate
+// response budget. Callers can retry that item in a smaller batch.
+var ErrBatchContentLimit = errors.New("batch content limit exceeded")
+
+// ReadContentBatch resolves the content blob for each requested document id in
+// one call, preserving order (result[i] corresponds to ids[i], duplicates
+// included). maxTotalBytes bounds the raw content retained across successful
+// results; an item that would exceed the remaining budget is returned with
+// ErrBatchContentLimit.
+//
+// Failures are per-id and non-fatal: missing rows, missing blobs, and backend
+// errors yield Found=false with Err set for that position; the remaining ids
+// still resolve.
+func (s *FileService) ReadContentBatch(ctx context.Context, ids []uuid.UUID, maxTotalBytes int64) []BatchContentResult {
+	results := make([]BatchContentResult, 0, len(ids))
+	remaining := maxTotalBytes
+	for _, id := range ids {
+		result := s.readOneContent(ctx, id, remaining)
+		if result.Found {
+			remaining -= int64(len(result.Content))
+		}
+		results = append(results, result)
+	}
+	return results
+}
+
+func (s *FileService) readOneContent(ctx context.Context, id uuid.UUID, remaining int64) BatchContentResult {
+	doc, err := s.Repo.GetByID(ctx, id)
+	if err != nil {
+		return BatchContentResult{ID: id, Found: false, Err: err}
+	}
+	if remaining <= 0 {
+		return BatchContentResult{ID: id, Found: false, Err: ErrBatchContentLimit}
+	}
+	rc, size, err := s.Storage.ReadStream(doc.ExternalID)
+	if err != nil {
+		return BatchContentResult{ID: id, Found: false, Err: fmt.Errorf("open file stream: %w", err)}
+	}
+	if size > remaining {
+		_ = rc.Close()
+		return BatchContentResult{ID: id, Found: false, Err: ErrBatchContentLimit}
+	}
+
+	content, readErr := io.ReadAll(io.LimitReader(rc, remaining+1))
+	closeErr := rc.Close()
+	switch {
+	case readErr != nil:
+		return BatchContentResult{ID: id, Found: false, Err: fmt.Errorf("read file stream: %w", readErr)}
+	case closeErr != nil:
+		return BatchContentResult{ID: id, Found: false, Err: fmt.Errorf("close file stream: %w", closeErr)}
+	case int64(len(content)) > remaining:
+		return BatchContentResult{ID: id, Found: false, Err: ErrBatchContentLimit}
+	case size >= 0 && int64(len(content)) != size:
+		return BatchContentResult{ID: id, Found: false, Err: fmt.Errorf("read file stream: expected %d bytes, got %d", size, len(content))}
+	}
+	return BatchContentResult{ID: id, Found: true, Content: content, MimeType: doc.MimeType}
 }
 
 // CreateDocument ingests a complete buffer through the streaming pipeline
@@ -181,6 +253,12 @@ func (s *FileService) findDedupDocument(ctx context.Context, externalID string, 
 // destination bucket already has a row with the same externalID, return
 // it as-is with Reused=true, matching the CreateDocument contract.
 func (s *FileService) CopyDocument(ctx context.Context, sourceID uuid.UUID, input model.CopyDocumentInput) (*model.Document, error) {
+	// Copy always creates a policy-owned logical document. Only the internal
+	// create flow may deliberately omit authorization.
+	if input.AuthorizationID == uuid.Nil {
+		return nil, ErrInvalidAuthorizationID
+	}
+
 	source, err := s.Repo.GetByID(ctx, sourceID)
 	if err != nil {
 		// ErrDocumentNotFound surfaces as 404 in the handler.
@@ -329,20 +407,24 @@ func (s *FileService) insertDocument(ctx context.Context, input model.CreateDocu
 	}
 
 	if errors.Is(err, model.ErrDuplicateKey) {
-		// SkipDedup means the caller explicitly asked for a fresh row. If the
-		// schema enforces unique(externalID, storageBucketID), we can't honor
-		// that intent — surface as ErrConflict rather than masquerading as a
-		// dedup hit (which would silently corrupt placeholder flows).
+		// SkipDedup means the caller explicitly asked for a fresh row. Any
+		// uniqueness failure means that insert cannot be honored; never
+		// masquerade it as a dedup hit and corrupt placeholder flows.
 		if input.SkipDedup {
 			return nil, ErrConflict
 		}
-		// Default path: another concurrent creator won the race on the
-		// unique(externalID, storageBucketID) index. Re-query and return
-		// the winner with Reused=true.
+		// One probe disambiguates the constraint without depending on its
+		// database-generated name: a matching content row is a valid dedup
+		// winner; no match means another unique column collided.
 		raced, findErr := s.Repo.FindByExternalIDAndBucket(ctx, stored.ExternalID, input.StorageBucketID)
 		if findErr == nil {
 			raced.Reused = true
 			return &raced, nil
+		}
+		if errors.Is(findErr, model.ErrDocumentNotFound) {
+			// No content winner exists, so treat this as a non-dedup unique
+			// collision (normally authorizationId or tagsetId).
+			return nil, ErrConflict
 		}
 		s.Logger.Warn("dedup: unique violation but re-query failed",
 			zap.String("externalID", stored.ExternalID), zap.Error(findErr))
@@ -567,10 +649,12 @@ var (
 	// the actor the required privilege. An evaluation that could not run at
 	// all surfaces as a wrapped transport error instead.
 	ErrForbidden = errors.New("forbidden")
-	// ErrConflict covers both flavors of write conflict: an optimistic-lock
-	// version mismatch on metadata updates, and a content-hash collision
-	// when SkipDedup forbids reusing the existing row.
-	ErrConflict = errors.New("conflict: document was modified concurrently")
+	// ErrConflict covers optimistic-lock failures and unique-column collisions
+	// that cannot be satisfied as a valid dedup hit.
+	ErrConflict = errors.New("conflict")
+	// ErrInvalidAuthorizationID rejects copy requests without a real policy ID.
+	// Create may intentionally use uuid.Nil, which persists as SQL NULL.
+	ErrInvalidAuthorizationID = errors.New("authorization ID is required for copy")
 	// ErrPayloadTooLarge rejects an upload exceeding the bucket's maxFileSize
 	// policy (distinct from the transport-level ErrOverLimit cap).
 	ErrPayloadTooLarge = errors.New("payload too large")

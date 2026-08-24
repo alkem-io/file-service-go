@@ -2,6 +2,14 @@ defaults:
   requestContentType: application/json
   responseContentType: application/json
   responseStatus: 200
+typeMapping:
+  - goType: github.com/alkem-io/file-service/internal/adapter/inbound/http.ContentBatchIDs
+    openapiType:
+      type: array
+      items:
+        type: string
+      minItems: 1
+      maxItems: 256
 info:
   title: Alkemio File Service
   description: |
@@ -16,4 +24,3 @@ info:
   license:
     name: EUPL-1.2
     url: https://opensource.org/licenses/EUPL-1.2
-

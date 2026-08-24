@@ -78,8 +78,11 @@ type CreateDocumentInput struct {
 	CreatedBy         *uuid.UUID
 	TemporaryLocation bool
 	StorageBucketID   uuid.UUID
-	AuthorizationID   uuid.UUID
-	TagsetID          *uuid.UUID
+	// AuthorizationID is optional for internal create callers. uuid.Nil
+	// persists as SQL NULL; a real UUID references an authorization policy.
+	// CopyDocumentInput intentionally remains required.
+	AuthorizationID uuid.UUID
+	TagsetID        *uuid.UUID
 
 	// SkipDedup, when true, bypasses the per-bucket content-hash dedup
 	// lookup and forces a fresh row insert even if an existing row in the
