@@ -142,13 +142,14 @@ func (m *mockAuth) CheckPrivilege(_ context.Context, actorID, privilege, authPol
 }
 
 type mockStorage struct {
-	data       []byte
-	err        error
-	saveErr    error
-	saved      []byte // captures the last Save/stage payload (replace-path rejection tests)
-	stages     []*httpMockStage
-	streamBody io.ReadCloser // if set, ReadStream returns this (to inject a mid-stream read failure)
-	streamSize int64         // Content-Length ReadStream reports when streamBody is set
+	data            []byte
+	err             error
+	saveErr         error
+	saved           []byte // captures the last Save/stage payload (replace-path rejection tests)
+	stages          []*httpMockStage
+	readStreamCalls int
+	streamBody      io.ReadCloser // if set, ReadStream returns this (to inject a mid-stream read failure)
+	streamSize      int64         // Content-Length ReadStream reports when streamBody is set
 	// Per-blob data for batch tests; nil keeps the existing flat mock behavior.
 	blobsByExternalID map[string][]byte
 }
@@ -204,6 +205,7 @@ func (m *mockStorage) Read(externalID string) ([]byte, error) {
 // error to drive the handler's 400/404/500 mapping), else m.data is served over a
 // bytes reader.
 func (m *mockStorage) ReadStream(externalID string) (io.ReadCloser, int64, error) {
+	m.readStreamCalls++
 	if m.blobsByExternalID != nil {
 		if b, ok := m.blobsByExternalID[externalID]; ok {
 			return io.NopCloser(bytes.NewReader(b)), int64(len(b)), nil
@@ -294,6 +296,41 @@ func TestPublicHandler_Unauthorized(t *testing.T) {
 
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", rr.Code)
+	}
+}
+
+func TestPublicHandler_NullAuthorizationDeniedBeforeAuthOrStorage(t *testing.T) {
+	docID := uuid.New()
+	auth := &mockAuth{result: model.AuthResult{Allowed: true}}
+	storage := &mockStorage{data: []byte("internal snapshot")}
+	h := &PublicHandler{
+		Repo: &mockDocRepo{doc: model.Document{
+			ID:              docID,
+			ExternalID:      "snapshot-hash",
+			AuthorizationID: uuid.Nil,
+		}},
+		Auth:    auth,
+		Storage: storage,
+		MaxAge:  86400,
+		Logger:  zap.NewNop(),
+	}
+
+	r := chi.NewRouter()
+	r.Get("/rest/storage/file/{id}", h.ServeDocument)
+
+	req := httptest.NewRequest(http.MethodGet, "/rest/storage/file/"+docID.String(), nil)
+	req = req.WithContext(context.WithValue(req.Context(), ctxKeyActorID, "actor-1"))
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rr.Code)
+	}
+	if auth.calls != 0 {
+		t.Fatalf("auth-eval called %d times, want 0", auth.calls)
+	}
+	if storage.readStreamCalls != 0 {
+		t.Fatalf("storage read called %d times, want 0", storage.readStreamCalls)
 	}
 }
 
