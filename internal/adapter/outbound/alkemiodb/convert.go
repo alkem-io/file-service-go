@@ -50,6 +50,16 @@ func uuidToPgxNullable(id *uuid.UUID) pgtype.UUID {
 	return pgtype.UUID{Bytes: *id, Valid: true}
 }
 
+// uuidToPgxNullableNil maps uuid.Nil to SQL NULL and every real UUID to a
+// valid pgx UUID. Create and CreateWithOutbox both call createDocumentParams,
+// so this is the single nullable-authorization mapping for both write paths.
+func uuidToPgxNullableNil(id uuid.UUID) pgtype.UUID {
+	if id == uuid.Nil {
+		return pgtype.UUID{Valid: false}
+	}
+	return pgtype.UUID{Bytes: id, Valid: true}
+}
+
 func pgxToUUID(id pgtype.UUID) uuid.UUID {
 	if !id.Valid {
 		return uuid.Nil

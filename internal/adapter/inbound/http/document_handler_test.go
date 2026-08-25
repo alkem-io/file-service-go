@@ -261,6 +261,57 @@ func TestDocumentHandler_Create_Success(t *testing.T) {
 	}
 }
 
+func TestDocumentHandler_Create_OmittedAuthorization_CreatesNullAuthRow(t *testing.T) {
+	h, repo, _ := newDocHandler()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, _ := writer.CreateFormFile("file", "snapshot.ybin")
+	_, _ = part.Write([]byte("snapshot"))
+	_ = writer.WriteField("displayName", "snapshot.ybin")
+	_ = writer.WriteField("storageBucketId", uuid.New().String())
+	// authorizationId deliberately omitted.
+	_ = writer.Close()
+
+	r := chi.NewRouter()
+	r.Post("/internal/file", h.Create)
+	req := httptest.NewRequest(http.MethodPost, "/internal/file", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201, body: %s", rr.Code, rr.Body.String())
+	}
+	if repo.lastCreateDoc.AuthorizationID != uuid.Nil {
+		t.Fatalf("repo authorizationId = %s, want uuid.Nil (SQL NULL)", repo.lastCreateDoc.AuthorizationID)
+	}
+}
+
+func TestDocumentHandler_Create_ExplicitNilAuthorization_400(t *testing.T) {
+	h, _, _ := newDocHandler()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, _ := writer.CreateFormFile("file", "snapshot.ybin")
+	_, _ = part.Write([]byte("snapshot"))
+	_ = writer.WriteField("displayName", "snapshot.ybin")
+	_ = writer.WriteField("storageBucketId", uuid.New().String())
+	_ = writer.WriteField("authorizationId", uuid.Nil.String())
+	_ = writer.Close()
+
+	r := chi.NewRouter()
+	r.Post("/internal/file", h.Create)
+	req := httptest.NewRequest(http.MethodPost, "/internal/file", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body: %s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestDocumentHandler_Create_Success_NotReused(t *testing.T) {
 	h, _, _ := newDocHandler()
 
@@ -403,6 +454,33 @@ func TestDocumentHandler_Create_SkipDedup_Conflict_Returns409(t *testing.T) {
 	r := chi.NewRouter()
 	r.Post("/internal/file", h.Create)
 
+	req := httptest.NewRequest(http.MethodPost, "/internal/file", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409, body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestDocumentHandler_Create_AuthorizationCollision_Returns409(t *testing.T) {
+	h, repo, _ := newDocHandler()
+	// No (externalID, bucket) winner exists in the default mock, so this
+	// unique violation represents authorizationId/tagsetId reuse.
+	repo.createErr = model.ErrDuplicateKey
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, _ := writer.CreateFormFile("file", "snapshot.ybin")
+	_, _ = part.Write([]byte("snapshot"))
+	_ = writer.WriteField("displayName", "snapshot.ybin")
+	_ = writer.WriteField("storageBucketId", uuid.New().String())
+	_ = writer.WriteField("authorizationId", uuid.New().String())
+	_ = writer.Close()
+
+	r := chi.NewRouter()
+	r.Post("/internal/file", h.Create)
 	req := httptest.NewRequest(http.MethodPost, "/internal/file", &body)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	rr := httptest.NewRecorder()
@@ -575,6 +653,26 @@ func TestDocumentHandler_Copy_InvalidSourceID_400(t *testing.T) {
 
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", rr.Code)
+	}
+}
+
+func TestDocumentHandler_Copy_NilAuthorizationID_400(t *testing.T) {
+	h, _, _ := newDocHandler()
+
+	body, _ := json.Marshal(CopyDocumentRequest{
+		SourceID:            uuid.New().String(),
+		DestinationBucketID: uuid.New().String(),
+		AuthorizationID:     uuid.Nil.String(),
+	})
+	r := chi.NewRouter()
+	r.Post("/internal/file/copy", h.Copy)
+	req := httptest.NewRequest(http.MethodPost, "/internal/file/copy", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body: %s", rr.Code, rr.Body.String())
 	}
 }
 
@@ -823,6 +921,41 @@ func TestDocumentHandler_Delete_Success(t *testing.T) {
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200, body: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["authorizationId"] != authID.String() {
+		t.Fatalf("authorizationId = %v, want %s", resp["authorizationId"], authID)
+	}
+}
+
+func TestDocumentHandler_Delete_NullAuthorizationIsOmitted(t *testing.T) {
+	h, repo, _ := newDocHandler()
+	docID := uuid.New()
+	repo.doc = model.Document{ID: docID, ExternalID: "snapshot"}
+	repo.deleteResult = model.DeletedDocument{AuthorizationID: uuid.Nil}
+	repo.count = 1
+
+	r := chi.NewRouter()
+	r.Delete("/internal/file/{id}", h.Delete)
+
+	req := httptest.NewRequest(http.MethodDelete, "/internal/file/"+docID.String(), nil)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if _, present := resp["authorizationId"]; present {
+		t.Fatalf("authorizationId must be omitted for a NULL policy, body: %s", rr.Body.String())
 	}
 }
 

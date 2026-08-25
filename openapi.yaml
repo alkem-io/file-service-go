@@ -1,5 +1,43 @@
 components:
   schemas:
+    http.ContentBatchIDs:
+      items:
+        type: string
+      maxItems: 256
+      minItems: 1
+      type: array
+    http.ContentBatchItem:
+      properties:
+        contentBase64:
+          type: string
+        error:
+          type: string
+        found:
+          type: boolean
+        id:
+          type: string
+        mimeType:
+          type: string
+      required:
+        - id
+        - found
+      type: object
+    http.ContentBatchRequest:
+      properties:
+        ids:
+          $ref: '#/components/schemas/http.ContentBatchIDs'
+      required:
+        - ids
+      type: object
+    http.ContentBatchResponse:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/http.ContentBatchItem'
+          type: array
+      required:
+        - items
+      type: object
     http.CopyDocumentRequest:
       properties:
         authorizationId:
@@ -53,8 +91,6 @@ components:
           type: string
         tagsetId:
           type: string
-      required:
-        - authorizationId
       type: object
     http.DocumentMetaResponse:
       properties:
@@ -317,6 +353,40 @@ paths:
         whole-file buffering.
       tags:
         - /internal
+  /internal/file/content-batch:
+    post:
+      description: |-
+        ContentBatch handles POST /internal/file/content-batch. Results preserve
+        request order and report malformed ids and missing content per item.
+      operationId: DocumentHandler.ContentBatch
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/http.ContentBatchRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/http.ContentBatchResponse'
+          description: OK
+        "400":
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/http.errorResponse'
+          description: Bad Request
+        "413":
+          content:
+            application/json; charset=utf-8:
+              schema:
+                $ref: '#/components/schemas/http.errorResponse'
+          description: Request Entity Too Large
+      summary: ContentBatch handles POST /internal/file/content-batch.
+      tags:
+        - /internal
   /internal/file/copy:
     post:
       description: |-
@@ -358,7 +428,7 @@ paths:
           content:
             application/json; charset=utf-8:
               schema:
-                $ref: '#/components/schemas/skipDedup-requested-but-a-row-with-this-content-already-exists-in-the-destination-bucket'
+                $ref: '#/components/schemas/copy-conflicts-with-an-existing-row'
           description: Conflict
         "500":
           content:

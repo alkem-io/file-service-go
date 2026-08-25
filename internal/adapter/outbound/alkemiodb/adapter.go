@@ -88,9 +88,9 @@ func (a *Adapter) FindByExternalIDAndBucket(ctx context.Context, externalID stri
 
 // Create inserts a new document row, serializing contentMetadata into the
 // JSONB content_metadata column (see marshalContentMetadata for the shape
-// rules). A unique violation — another row already holds this content in the
-// bucket — surfaces as model.ErrDuplicateKey so the service can fall back to
-// its dedup path.
+// rules). Any unique violation surfaces as model.ErrDuplicateKey; the service
+// probes (externalID, bucket) once to distinguish a content winner from an
+// authorizationId/tagsetId conflict.
 func (a *Adapter) Create(ctx context.Context, doc model.Document, contentMetadata model.ContentMetadata) (uuid.UUID, error) {
 	raw, err := marshalContentMetadata(contentMetadata)
 	if err != nil {
@@ -119,16 +119,18 @@ func createDocumentParams(doc model.Document, raw []byte) queries.CreateDocument
 		CreatedBy:         uuidToPgxNullable(doc.CreatedBy),
 		TemporaryLocation: doc.TemporaryLocation,
 		StorageBucketId:   uuidToPgx(doc.StorageBucketID),
-		AuthorizationId:   uuidToPgx(doc.AuthorizationID),
-		TagsetId:          uuidToPgxNullable(doc.TagsetID),
-		CreatedDate:       timeToPgx(doc.CreatedDate),
-		UpdatedDate:       timeToPgx(doc.UpdatedDate),
-		ContentMetadata:   raw,
+		// uuid.Nil means the create caller intentionally omitted authorization.
+		// Persist SQL NULL: the FK cannot reference the all-zero UUID, while the
+		// UNIQUE column permits multiple NULL rows.
+		AuthorizationId: uuidToPgxNullableNil(doc.AuthorizationID),
+		TagsetId:        uuidToPgxNullable(doc.TagsetID),
+		CreatedDate:     timeToPgx(doc.CreatedDate),
+		UpdatedDate:     timeToPgx(doc.UpdatedDate),
+		ContentMetadata: raw,
 	}
 }
 
-// isUniqueViolation reports whether err is a Postgres unique-constraint violation — the
-// signal that another row already holds this content in the bucket (the dedup race).
+// isUniqueViolation reports whether err is any Postgres unique-constraint violation.
 func isUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == pgerrcode.UniqueViolation

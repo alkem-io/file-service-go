@@ -64,6 +64,34 @@ func TestMock_CreateWithOutbox_Commits(t *testing.T) {
 	}
 }
 
+func TestMock_CreateWithOutbox_OmittedAuthorizationIsNull(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	docID := uuid.New()
+	doc := sampleDoc(docID)
+	doc.AuthorizationID = uuid.Nil
+
+	insertArgs := anyArgs(13)
+	insertArgs[8] = pgtype.UUID{Valid: false} // authorizationId
+	mock.ExpectBegin()
+	mock.ExpectQuery("INSERT INTO file").WithArgs(insertArgs...).
+		WillReturnRows(mock.NewRows([]string{"id"}).AddRow(pgtype.UUID{Bytes: docID, Valid: true}))
+	mock.ExpectExec("INSERT INTO file_backup_outbox").WithArgs(anyArgs(6)...).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectCommit()
+	mock.ExpectExec("NOTIFY file_backup_outbox").WillReturnResult(pgxmock.NewResult("NOTIFY", 0))
+
+	if _, err := New(mock).CreateWithOutbox(context.Background(), doc, model.ContentMetadata{}, 0); err != nil {
+		t.Fatalf("CreateWithOutbox: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Error(err)
+	}
+}
+
 // TestMock_CreateWithOutbox_DedupRollsBack: a unique violation on the document rolls the
 // transaction back (NO outbox row, NO NOTIFY) and surfaces model.ErrDuplicateKey so the
 // service's dedup path re-queries the winner.

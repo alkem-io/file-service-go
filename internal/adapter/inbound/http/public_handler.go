@@ -48,6 +48,10 @@ func (h *PublicHandler) ServeDocument(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	if doc.AuthorizationID == uuid.Nil {
+		writeJSONError(w, http.StatusForbidden, "insufficient privileges")
+		return
+	}
 
 	// Authorization check via h2c HTTP/2 (or NATS fallback). For anonymous
 	// callers, actorID is empty — the auth-evaluation-service treats that

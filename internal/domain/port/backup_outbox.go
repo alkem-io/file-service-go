@@ -17,8 +17,8 @@ import (
 // existing write path, never a behaviour change when disabled.
 type BackupOutboxRepo interface {
 	// CreateWithOutbox inserts a new document and enqueues its backup hint atomically.
-	// Returns model.ErrDuplicateKey on the dedup race (no outbox row written), exactly as
-	// DocumentRepo.Create does, so the service's dedup path is unchanged.
+	// Returns model.ErrDuplicateKey on any document unique violation (no outbox row written),
+	// exactly as DocumentRepo.Create does, so service classification is identical.
 	CreateWithOutbox(ctx context.Context, doc model.Document, contentMetadata model.ContentMetadata, priority int16) (uuid.UUID, error)
 	// UpdateFileWithOutbox replaces a document's content and enqueues a backup hint for the new
 	// content hash atomically, compare-and-set against expectedExternalID and expectedVersion. Same

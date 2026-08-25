@@ -65,6 +65,17 @@ func (q *Queries) EnqueueBackupOutbox(ctx context.Context, arg EnqueueBackupOutb
 	return err
 }
 
+const notifyBackupOutbox = `-- name: NotifyBackupOutbox :exec
+NOTIFY file_backup_outbox
+`
+
+// Best-effort post-commit wake for the backup worker after an outbox row is recorded. A lost
+// NOTIFY is covered by the durable table + the worker's poll floor, so callers ignore the error.
+func (q *Queries) NotifyBackupOutbox(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, notifyBackupOutbox)
+	return err
+}
+
 const pruneBackupOutboxDone = `-- name: PruneBackupOutboxDone :execrows
 DELETE FROM file_backup_outbox
 WHERE status = 'done' AND "createdDate" < $1
